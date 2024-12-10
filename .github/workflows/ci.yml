@@ -37,63 +37,77 @@ jobs:
               with:
                   name: package
                   path: dist/
-    deploy:
-        needs: build
-        permissions:
-            id-token: write
-        runs-on: ubuntu-latest
-        environment:
-            name: staging
-            url: https://pizza.suop.nl
-        env:
-            version: ${{needs.build.outputs.version}}
-        steps:
-            - name: Create OIDC token to AWS
-              uses: aws-actions/configure-aws-credentials@v4
-              with:
-                  audience: sts.amazonaws.com
-                  aws-region: us-east-1
-                  role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT }}:role/${{ secrets.CI_IAM_ROLE }}
-
-            - name: Download dist artifact
-              uses: actions/download-artifact@v4
-              with:
-                  name: package
-                  path: dist/
-
-            - name: Push to AWS S3
+            - name: Run tests
               run: |
-                  echo Deploying $version
-                  aws s3 cp dist s3://${{ secrets.APP_BUCKET }}/$version --recursive
-            - name: Update staging version
+                  npx playwright install --with-deps chromium
+                  npm run test:coverage
+            - name: Update coverage
               run: |
-                  # Get the current distribution and update it to use the new version
-                  aws cloudfront get-distribution-config --id ${{ secrets.DISTRIBUTION_ID }} > original.json
-                  etag=$(jq -r '.ETag' original.json)
-                  jq '.DistributionConfig' original.json > request.json
-                  jq --arg version "/$version" '.Origins.Items[0].OriginPath = $version' request.json > finalRequest.json
-                  aws cloudfront update-distribution --id ${{ secrets.DISTRIBUTION_ID }} --if-match $etag --distribution-config file://finalRequest.json
+                  coverage_pct=$(grep -o '"pct":[0-9.]*' coverage/coverage-summary.json | head -n 1 | cut -d ':' -f 2)
+                  color=$(echo "$coverage_pct < 80" | bc -l | awk '{if ($1) print "yellow"; else print "green"}')
+                  curl https://img.shields.io/badge/Coverage-$coverage_pct%25-$color -o coverageBadge.svg
+                  git config user.name github-actions
+                  git config user.email github-actions@github.com
+                  git add .
+                  git commit -m "generated"
+                  git push
+    # deploy:
+    #     needs: build
+    #     permissions:
+    #         id-token: write
+    #     runs-on: ubuntu-latest
+    #     environment:
+    #         name: staging
+    #         url: https://pizza.suop.nl
+    #     env:
+    #         version: ${{needs.build.outputs.version}}
+    #     steps:
+    #         - name: Create OIDC token to AWS
+    #           uses: aws-actions/configure-aws-credentials@v4
+    #           with:
+    #               audience: sts.amazonaws.com
+    #               aws-region: us-east-1
+    #               role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT }}:role/${{ secrets.CI_IAM_ROLE }}
 
-                  # Wait for the distribution to deploy and then invalidate the cache
-                  while [ "$(aws cloudfront get-distribution --id ${{ secrets.DISTRIBUTION_ID }} --query 'Distribution.Status' --output text)" != "Deployed" ]; do echo "Distribution is still updating..."; sleep 5; done
-                  aws cloudfront create-invalidation --distribution-id ${{ secrets.DISTRIBUTION_ID }} --paths "/*"
+    #         - name: Download dist artifact
+    #           uses: actions/download-artifact@v4
+    #           with:
+    #               name: package
+    #               path: dist/
 
-    release:
-        needs:
-            - build
-            - deploy
-        runs-on: ubuntu-latest
-        steps:
-            - name: Create Release
-              uses: ncipollo/release-action@2c591bcc8ecdcd2db72b97d6147f871fcd833ba5
-              env:
-                  version: ${{needs.build.outputs.version}}
-              with:
-                  tag: version-${{ env.version }}
-                  name: Version ${{ env.version }}
-                  body: |
-                      ## 🚀 Changes
+    #         - name: Push to AWS S3
+    #           run: |
+    #               echo Deploying $version
+    #               aws s3 cp dist s3://${{ secrets.APP_BUCKET }}/$version --recursive
+    #         - name: Update staging version
+    #           run: |
+    #               # Get the current distribution and update it to use the new version
+    #               aws cloudfront get-distribution-config --id ${{ secrets.DISTRIBUTION_ID }} > original.json
+    #               etag=$(jq -r '.ETag' original.json)
+    #               jq '.DistributionConfig' original.json > request.json
+    #               jq --arg version "/$version" '.Origins.Items[0].OriginPath = $version' request.json > finalRequest.json
+    #               aws cloudfront update-distribution --id ${{ secrets.DISTRIBUTION_ID }} --if-match $etag --distribution-config file://finalRequest.json
 
-                      ${{ github.event.head_commit.message }}
+    #               # Wait for the distribution to deploy and then invalidate the cache
+    #               while [ "$(aws cloudfront get-distribution --id ${{ secrets.DISTRIBUTION_ID }} --query 'Distribution.Status' --output text)" != "Deployed" ]; do echo "Distribution is still updating..."; sleep 5; done
+    #               aws cloudfront create-invalidation --distribution-id ${{ secrets.DISTRIBUTION_ID }} --paths "/*"
 
-                      **commit**: ${{ github.sha }}
+    # release:
+    #     needs:
+    #         - build
+    #         - deploy
+    #     runs-on: ubuntu-latest
+    #     steps:
+    #         - name: Create Release
+    #           uses: ncipollo/release-action@2c591bcc8ecdcd2db72b97d6147f871fcd833ba5
+    #           env:
+    #               version: ${{needs.build.outputs.version}}
+    #           with:
+    #               tag: version-${{ env.version }}
+    #               name: Version ${{ env.version }}
+    #               body: |
+    #                   ## 🚀 Changes
+
+    #                   ${{ github.event.head_commit.message }}
+
+    #                   **commit**: ${{ github.sha }}
